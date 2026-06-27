@@ -17,13 +17,13 @@ from typing import List
 from typing_extensions import TypedDict
 
 # ── Lazy imports so Streamlit can boot even before packages are installed
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from langchain_core.documents import Document
 from langchain_community.tools import DuckDuckGoSearchRun
-from langchain.schema import Document
 from langgraph.graph import StateGraph, END
 
 
