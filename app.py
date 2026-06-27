@@ -158,9 +158,12 @@ def build_vectorstore_and_graph():
     rewrite_chain = (
         ChatPromptTemplate.from_messages([
             ("system",
-             "You are a technical support query optimizer. "
-             "Rewrite the user's question into a concise, keyword-rich search query. "
-             "Output ONLY the rewritten query."),
+             "You are a technical support query optimizer for the Orion SmartHub X1 Pro gateway device. "
+             "Rewrite the user's question into a concise keyword-rich search query. "
+             "IMPORTANT: Always keep Orion SmartHub X1 Pro product context in the query. "
+             "Include hardware terms like: LED color, reset, provisioning, ERR-302, Z-Wave, "
+             "firmware, setup, Wi-Fi, Ethernet, BLE whenever relevant. "
+             "Output ONLY the rewritten query, nothing else."),
             ("human", "Original question: {query}")
         ]) | llm | StrOutputParser()
     )
@@ -168,8 +171,11 @@ def build_vectorstore_and_graph():
     grade_chain = (
         ChatPromptTemplate.from_messages([
             ("system",
-             "You are a QA Engineer grading document relevance. "
-             "Is this document chunk relevant to the user question? "
+             "You are a QA Engineer grading document relevance for the Orion SmartHub X1 Pro manual. "
+             "Grade YES if the document chunk contains ANY information that could help answer the question — "
+             "even partial matches, related hardware concepts, or adjacent topics count as relevant. "
+             "Only grade NO if the chunk is completely unrelated to the question topic. "
+             "Be generous: when in doubt, grade yes. "
              'Output ONLY JSON: {{"relevance_score": "yes"}} or {{"relevance_score": "no"}}'),
             ("human", "Question: {question}\n\nDocument: {document}")
         ]) | llm | JsonOutputParser()
@@ -178,11 +184,19 @@ def build_vectorstore_and_graph():
     generate_chain = (
         ChatPromptTemplate.from_messages([
             ("system",
-             "You are a senior technical support specialist. "
-             "Using ONLY the context provided, write a clear, accurate technical answer. "
-             "Do NOT invent facts. Use numbered steps for procedures."),
+             "You are a senior technical support specialist for the Orion SmartHub X1 Pro gateway. "
+             "Answer the user's question using STRICTLY and ONLY the context documents provided below. "
+             "Rules you must follow:\n"
+             "1. Do NOT use any outside knowledge. Every sentence must be traceable to the context.\n"
+             "2. If the context does not contain the answer, say exactly: "
+             "'I could not find this information in the Orion SmartHub X1 Pro manual.'\n"
+             "3. Never guess, infer, or add information beyond what is explicitly stated in the context.\n"
+             "4. Use numbered steps when describing procedures.\n"
+             "5. Quote or closely paraphrase the manual — do not generalize."),
             ("human",
-             "User Question: {question}\n\nContext:\n{context}\n\nAnswer:")
+             "User Question: {question}\n\n"
+             "Context Documents (use ONLY these):\n{context}\n\n"
+             "Answer strictly based on the context above:")
         ]) | llm | StrOutputParser()
     )
 
@@ -223,7 +237,9 @@ def build_vectorstore_and_graph():
         return {**state, "documents": relevant, "qa_trace": trace}
 
     def node_web_search(state: GraphState) -> GraphState:
-        results = web_tool.invoke(state["optimized_query"])
+        # Anchor web search to product to avoid generic off-topic results
+        anchored_query = f"Orion SmartHub X1 Pro {state['optimized_query']}"
+        results = web_tool.invoke(anchored_query)
         web_doc = Document(
             page_content=results,
             metadata={"source": "web_search"}
