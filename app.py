@@ -238,7 +238,8 @@ def build_vectorstore_and_graph():
 
     def node_web_search(state: GraphState) -> GraphState:
         # Anchor web search to product to avoid generic off-topic results
-        anchored_query = f"Orion SmartHub X1 Pro {state['optimized_query']}"
+        #anchored_query = f"Orion SmartHub X1 Pro {state['optimized_query']}"
+        anchored_query = f" {state['optimized_query']}"
         results = web_tool.invoke(anchored_query)
         web_doc = Document(
             page_content=results,
