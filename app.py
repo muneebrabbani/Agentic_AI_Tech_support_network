@@ -2,13 +2,15 @@
 app.py — Adaptive Multi-Agent Tech Support Network
 Streamlit front-end for the Orion SmartHub X1 Pro Support System
 
+This app uses the EXACT same agent logic as the working notebook.ipynb.
+
 Run locally:
     streamlit run app.py
 
 Deploy on Streamlit Cloud:
-    Push this file + requirements.txt + orion_hub_manual.txt to GitHub,
+    Push this file + requirements.txt to GitHub,
     then connect the repo at https://share.streamlit.io
-    Set OPENAI_API_KEY in App Settings → Secrets.
+    Set OPENAI_API_KEY in App Settings -> Secrets.
 """
 
 import os
@@ -16,7 +18,6 @@ import streamlit as st
 from typing import List
 from typing_extensions import TypedDict
 
-# ── Lazy imports so Streamlit can boot even before packages are installed
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
@@ -30,12 +31,7 @@ from langgraph.graph import StateGraph, END
 # ══════════════════════════════════════════════════════════
 # PAGE CONFIG
 # ══════════════════════════════════════════════════════════
-st.set_page_config(
-    page_title="Orion Support Hub",
-    page_icon="🤖",
-    layout="centered",
-)
-
+st.set_page_config(page_title="Orion Support Hub", page_icon="🤖", layout="centered")
 st.title("🤖 Orion SmartHub X1 Pro — AI Support Hub")
 st.caption("Powered by a Multi-Agent LangGraph Network | ChromaDB · DuckDuckGo · GPT-4o-mini")
 st.divider()
@@ -50,9 +46,7 @@ if not api_key:
     with st.sidebar:
         st.header("🔑 Configuration")
         api_key = st.text_input(
-            "OpenAI API Key",
-            type="password",
-            placeholder="sk-...",
+            "OpenAI API Key", type="password", placeholder="sk-...",
             help="Your key is only used for this session and never stored."
         )
         st.caption("Get a key at [platform.openai.com](https://platform.openai.com)")
@@ -65,7 +59,7 @@ os.environ["OPENAI_API_KEY"] = api_key
 
 
 # ══════════════════════════════════════════════════════════
-# GRAPH STATE
+# GRAPH STATE  (identical to notebook)
 # ══════════════════════════════════════════════════════════
 class GraphState(TypedDict):
     original_query:   str
@@ -78,7 +72,7 @@ class GraphState(TypedDict):
 
 
 # ══════════════════════════════════════════════════════════
-# VECTOR STORE — built once and cached across sessions
+# FAQ SOURCE TEXT  (the Orion manual)
 # ══════════════════════════════════════════════════════════
 FAQ_TEXT = """
 ENTERPRISE TECHNICAL MANUAL & FAQ: ORION SMARTHUB X1 PRO GATEWAY
@@ -126,127 +120,109 @@ Remediation Protocol:
 """
 
 
+# ══════════════════════════════════════════════════════════
+# BUILD VECTOR STORE + GRAPH  (cached — built once per session)
+# Logic is identical to the working notebook.
+# ══════════════════════════════════════════════════════════
 @st.cache_resource(show_spinner="📚 Building vector database from FAQ manual...")
-def build_vectorstore_and_graph():
-    """Build ChromaDB vector store and compile LangGraph — cached for the session."""
+def build_app():
 
-    # ── 1. Chunk the FAQ document
+    # ── Split + embed into ChromaDB
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500,
-        chunk_overlap=80,
+        chunk_size=500, chunk_overlap=80,
         separators=["\n\n", "\n", ". ", " ", ""]
     )
-    chunks = splitter.split_text(FAQ_TEXT)
-    docs = [
-        Document(page_content=c, metadata={"source": "orion_hub_manual"})
-        for c in chunks
-    ]
+    raw_chunks = splitter.split_text(FAQ_TEXT)
+    docs = [Document(page_content=c, metadata={"source": "orion_hub_manual"})
+            for c in raw_chunks]
 
-    # ── 2. Embed and store in ChromaDB (in-memory for Streamlit Cloud)
     embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
     vectorstore = Chroma.from_documents(
-        documents=docs,
-        embedding=embeddings,
-        collection_name="orion_faq"
+        documents=docs, embedding=embeddings, collection_name="orion_faq"
     )
     retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 3})
 
-    # ── 3. LLM (single instance)
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
-    # ── 4. Chains
-    rewrite_chain = (
-        ChatPromptTemplate.from_messages([
-            ("system",
-             "You are a technical support query optimizer for a smart home gateway device. "
-             "Rewrite the user's question into concise keyword-rich search terms. "
-             "Use specific hardware terms where relevant such as: "
-             "LED status color, factory reset, provisioning, ERR-302, Z-Wave mesh, "
-             "firmware, Wi-Fi setup, Ethernet, BLE. "
-             "Do NOT include any brand name or product name in the output. "
-             "Output ONLY the short rewritten keywords — no explanation, no prefix."),
-            ("human", "Original question: {query}")
-        ]) | llm | StrOutputParser()
-    )
+    # ══════════════════════════════════════════════
+    # NODE 1 — Query Rewriter (Support Agent)
+    # ══════════════════════════════════════════════
+    rewrite_prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         "You are a technical support query optimizer. "
+         "Your ONLY job is to rewrite the user's question into a concise, "
+         "keyword-rich search query optimized for semantic vector search. "
+         "Output ONLY the rewritten query — no explanation, no preamble."),
+        ("human", "Original question: {query}")
+    ])
+    rewrite_chain = rewrite_prompt | llm | StrOutputParser()
 
-    grade_chain = (
-        ChatPromptTemplate.from_messages([
-            ("system",
-             "You are a QA Engineer grading document relevance for the Orion SmartHub X1 Pro manual. "
-             "Grade YES if the document chunk contains ANY information that could help answer the question — "
-             "even partial matches, related hardware concepts, or adjacent topics count as relevant. "
-             "Only grade NO if the chunk is completely unrelated to the question topic. "
-             "Be generous: when in doubt, grade yes. "
-             'Output ONLY JSON: {{"relevance_score": "yes"}} or {{"relevance_score": "no"}}'),
-            ("human", "Question: {question}\n\nDocument: {document}")
-        ]) | llm | JsonOutputParser()
-    )
-
-    generate_chain = (
-        ChatPromptTemplate.from_messages([
-            ("system",
-             "You are a senior technical support specialist for the Orion SmartHub X1 Pro gateway. "
-             "Answer the user's question using STRICTLY and ONLY the context documents provided below. "
-             "Rules you must follow:\n"
-             "1. Do NOT use any outside knowledge. Every sentence must be traceable to the context.\n"
-             "2. If the context does not contain the answer, say exactly: "
-             "'I could not find this information in the Orion SmartHub X1 Pro manual.'\n"
-             "3. Never guess, infer, or add information beyond what is explicitly stated in the context.\n"
-             "4. Use numbered steps when describing procedures.\n"
-             "5. Quote or closely paraphrase the manual — do not generalize."),
-            ("human",
-             "User Question: {question}\n\n"
-             "Context Documents (use ONLY these):\n{context}\n\n"
-             "Answer strictly based on the context above:")
-        ]) | llm | StrOutputParser()
-    )
-
-    hallucination_chain = (
-        ChatPromptTemplate.from_messages([
-            ("system",
-             "You are a QA Engineer performing a hallucination audit. "
-             "Is every factual claim in the answer grounded in the source documents? "
-             'Output ONLY JSON: {{"hallucination_check": "passed"}} or {{"hallucination_check": "failed"}}'),
-            ("human",
-             "Source Documents:\n{documents}\n\nGenerated Answer:\n{generation}")
-        ]) | llm | JsonOutputParser()
-    )
-
-    web_tool = DuckDuckGoSearchRun()
-
-    # ── 5. Node functions
     def node_rewrite_query(state: GraphState) -> GraphState:
         optimized = rewrite_chain.invoke({"query": state["original_query"]})
         trace = state.get("qa_trace", [])
-        trace.append(f"✏️ Query optimized for vector search")
+        trace.append(f"✏️ Query rewritten: '{state['original_query']}' → '{optimized}'")
         return {**state, "optimized_query": optimized, "qa_trace": trace}
+
+    # ══════════════════════════════════════════════
+    # NODE 2 — Retrieve & Grade (Support Agent + QA Agent)
+    # ══════════════════════════════════════════════
+    grade_prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         "You are a QA Engineer grading document relevance. "
+         "Given the user question and a retrieved document chunk, "
+         "decide if the chunk is relevant to answering the question. "
+         'Output ONLY valid JSON: {{"relevance_score": "yes"}} or {{"relevance_score": "no"}}'),
+        ("human", "Question: {question}\n\nDocument: {document}")
+    ])
+    grade_chain = grade_prompt | llm | JsonOutputParser()
 
     def node_retrieve_and_grade(state: GraphState) -> GraphState:
         raw_docs = retriever.invoke(state["optimized_query"])
-        relevant = []
+        relevant_docs = []
         for doc in raw_docs:
-            r = grade_chain.invoke({
+            result = grade_chain.invoke({
                 "question": state["optimized_query"],
                 "document": doc.page_content
             })
-            if r.get("relevance_score") == "yes":
-                relevant.append(doc)
+            if result.get("relevance_score") == "yes":
+                relevant_docs.append(doc)
         trace = state.get("qa_trace", [])
         trace.append(
-            f"📚 Retrieved {len(raw_docs)} chunks → **{len(relevant)} graded relevant** by QA Agent"
+            f"📚 Retrieved {len(raw_docs)} chunks → {len(relevant_docs)} graded relevant by QA Agent"
         )
-        return {**state, "documents": relevant, "qa_trace": trace}
+        return {**state, "documents": relevant_docs, "qa_trace": trace}
+
+    # ══════════════════════════════════════════════
+    # NODE 3 — Web Search Fallback (DuckDuckGo)
+    # ══════════════════════════════════════════════
+    web_search_tool = DuckDuckGoSearchRun()
 
     def node_web_search(state: GraphState) -> GraphState:
-        # Anchor web search to product to avoid generic off-topic results
-        results = web_tool.invoke(state['optimized_query'])
+        results = web_search_tool.invoke(state["optimized_query"])
         web_doc = Document(
             page_content=results,
-            metadata={"source": "web_search"}
+            metadata={"source": "web_search", "query": state["optimized_query"]}
         )
         trace = state.get("qa_trace", [])
-        trace.append("🌐 Local docs insufficient — **Web Search triggered** (DuckDuckGo fallback)")
+        trace.append("🌐 Local docs insufficient — Web Search triggered (DuckDuckGo)")
         return {**state, "documents": [web_doc], "web_search_used": True, "qa_trace": trace}
+
+    # ══════════════════════════════════════════════
+    # NODE 4 — Generate Answer (Support Agent)
+    # ══════════════════════════════════════════════
+    generate_prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         "You are a senior technical support specialist. "
+         "Using ONLY the provided context documents, write a clear, accurate, "
+         "and complete technical answer to the user's question. "
+         "Do NOT invent facts. If the context does not contain the answer, say so clearly. "
+         "Format your answer with numbered steps when describing procedures."),
+        ("human",
+         "User Question: {question}\n\n"
+         "Context Documents:\n{context}\n\n"
+         "Write a professional technical support answer:")
+    ])
+    generate_chain = generate_prompt | llm | StrOutputParser()
 
     def node_generate(state: GraphState) -> GraphState:
         context = "\n\n---\n\n".join([d.page_content for d in state["documents"]])
@@ -255,8 +231,24 @@ def build_vectorstore_and_graph():
             "context": context
         })
         trace = state.get("qa_trace", [])
-        trace.append("💬 Answer drafted by **Support Specialist Agent**")
+        trace.append("💬 Answer generated by Support Agent")
         return {**state, "generation": answer, "qa_trace": trace}
+
+    # ══════════════════════════════════════════════
+    # NODE 5 — Hallucination Check (QA Agent / Gatekeeper)
+    # ══════════════════════════════════════════════
+    hallucination_prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         "You are a strict QA Engineer performing a hallucination audit. "
+         "Check whether the generated answer is FULLY grounded in the provided source documents. "
+         "If every factual claim in the answer can be traced to the source documents, output PASSED. "
+         "If the answer contains any invented facts, unsupported claims, or speculation, output FAILED. "
+         'Output ONLY valid JSON: {{"hallucination_check": "passed"}} or {{"hallucination_check": "failed"}}'),
+        ("human",
+         "Source Documents:\n{documents}\n\n"
+         "Generated Answer:\n{generation}")
+    ])
+    hallucination_chain = hallucination_prompt | llm | JsonOutputParser()
 
     def node_hallucination_check(state: GraphState) -> GraphState:
         docs_text = "\n\n---\n\n".join([d.page_content for d in state["documents"]])
@@ -267,27 +259,37 @@ def build_vectorstore_and_graph():
         verdict = result.get("hallucination_check", "failed")
         trace = state.get("qa_trace", [])
         if verdict == "passed":
-            trace.append("✅ **QA Gatekeeper: PASSED** — answer is fully grounded in sources")
+            trace.append("✅ QA Agent: Hallucination check PASSED — answer is grounded")
             return {**state, "qa_trace": trace}
         else:
             new_count = state.get("loop_count", 0) + 1
             trace.append(
-                f"❌ **QA Gatekeeper: FAILED** (attempt {new_count}/2) — triggering self-correction loop"
+                f"❌ QA Agent: Hallucination check FAILED (loop {new_count}/2) — triggering rewrite"
             )
             return {**state, "loop_count": new_count, "qa_trace": trace}
 
-    # ── 6. Edge routers
+    # ══════════════════════════════════════════════
+    # EDGE ROUTERS
+    # ══════════════════════════════════════════════
     def route_after_grading(state: GraphState) -> str:
-        return "generate" if state["documents"] else "web_search"
+        if state["documents"]:
+            return "generate"
+        else:
+            return "web_search"
 
-    def route_after_hallucination(state: GraphState) -> str:
+    def route_after_hallucination_check(state: GraphState) -> str:
         trace = state.get("qa_trace", [])
-        last = trace[-1] if trace else ""
-        if "PASSED" in last:
+        last_entry = trace[-1] if trace else ""
+        if "PASSED" in last_entry:
             return "end"
-        return "end" if state.get("loop_count", 0) >= 2 else "rewrite"
+        loop_count = state.get("loop_count", 0)
+        if loop_count >= 2:
+            return "end"
+        return "rewrite"
 
-    # ── 7. Build and compile graph
+    # ══════════════════════════════════════════════
+    # COMPILE GRAPH
+    # ══════════════════════════════════════════════
     gb = StateGraph(GraphState)
     gb.add_node("rewrite_query",       node_rewrite_query)
     gb.add_node("retrieve_and_grade",  node_retrieve_and_grade)
@@ -296,26 +298,24 @@ def build_vectorstore_and_graph():
     gb.add_node("hallucination_check", node_hallucination_check)
 
     gb.set_entry_point("rewrite_query")
-    gb.add_edge("rewrite_query",     "retrieve_and_grade")
-    gb.add_edge("web_search",        "generate")
-    gb.add_edge("generate",          "hallucination_check")
+    gb.add_edge("rewrite_query",  "retrieve_and_grade")
+    gb.add_edge("web_search",     "generate")
+    gb.add_edge("generate",       "hallucination_check")
+
     gb.add_conditional_edges(
-        "retrieve_and_grade",
-        route_after_grading,
+        "retrieve_and_grade", route_after_grading,
         {"generate": "generate", "web_search": "web_search"}
     )
     gb.add_conditional_edges(
-        "hallucination_check",
-        route_after_hallucination,
+        "hallucination_check", route_after_hallucination_check,
         {"end": END, "rewrite": "rewrite_query"}
     )
 
-    compiled_app = gb.compile()
-    return compiled_app
+    return gb.compile()
 
 
-# ── Build/load the graph (cached)
-support_app = build_vectorstore_and_graph()
+# ── Build the graph (cached)
+support_app = build_app()
 st.success("✅ AI Support Network is ready!", icon="🚀")
 
 
@@ -325,7 +325,6 @@ st.success("✅ AI Support Network is ready!", icon="🚀")
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-# Render previous messages
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -340,12 +339,10 @@ for msg in st.session_state.chat_history:
 # ══════════════════════════════════════════════════════════
 if user_input := st.chat_input("Ask a technical support question about your Orion SmartHub..."):
 
-    # Show user message
     st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Run the multi-agent graph
     with st.chat_message("assistant"):
         with st.status("🤖 Multi-agent network processing your query...", expanded=True) as status:
             st.write("✏️ Support Agent rewriting query...")
@@ -362,35 +359,26 @@ if user_input := st.chat_input("Ask a technical support question about your Orio
 
             final_state = support_app.invoke(initial_state)
 
-            trace = final_state.get("qa_trace", [])
+            trace    = final_state.get("qa_trace", [])
             web_used = final_state.get("web_search_used", False)
-            loops = final_state.get("loop_count", 0)
+            loops    = final_state.get("loop_count", 0)
 
-            # Update status label
             if loops > 0:
-                status.update(
-                    label=f"✅ Done — QA correction loop triggered {loops}x",
-                    state="complete"
-                )
+                status.update(label=f"✅ Done — QA correction loop triggered {loops}x", state="complete")
             elif web_used:
                 status.update(label="✅ Done — Web search fallback used", state="complete")
             else:
                 status.update(label="✅ Done — Answered from local knowledge base", state="complete")
 
-        # Display the answer
         answer = final_state.get("generation", "⚠️ No answer could be generated.")
         st.markdown(answer)
 
-        # Show the agentic trace in an expander
         with st.expander("🔍 View Agentic Decision Trace", expanded=False):
             for step in trace:
                 st.markdown(f"- {step}")
 
-    # Save to chat history
     st.session_state.chat_history.append({
-        "role": "assistant",
-        "content": answer,
-        "trace": trace
+        "role": "assistant", "content": answer, "trace": trace
     })
 
 
@@ -400,14 +388,13 @@ if user_input := st.chat_input("Ask a technical support question about your Orio
 with st.sidebar:
     st.divider()
     st.subheader("💡 Try These Queries")
-    sample_qs = [
+    for q in [
         "My LED is solid green. Is the device working?",
         "How do I do a factory reset?",
         "What does ERR-302 mean and how do I fix it?",
         "How do I set up the SmartHub for the first time?",
         "What processor does the SmartHub use?",
-    ]
-    for q in sample_qs:
+    ]:
         st.code(q, language=None)
 
     st.divider()
