@@ -158,12 +158,13 @@ def build_vectorstore_and_graph():
     rewrite_chain = (
         ChatPromptTemplate.from_messages([
             ("system",
-             "You are a technical support query optimizer for the Orion SmartHub X1 Pro gateway device. "
-             "Rewrite the user's question into a concise keyword-rich search query. "
-             "IMPORTANT: Always keep Orion SmartHub X1 Pro product context in the query. "
-             "Include hardware terms like: LED color, reset, provisioning, ERR-302, Z-Wave, "
-             "firmware, setup, Wi-Fi, Ethernet, BLE whenever relevant. "
-             "Output ONLY the rewritten query, nothing else."),
+             "You are a technical support query optimizer for a smart home gateway device. "
+             "Rewrite the user's question into concise keyword-rich search terms. "
+             "Use specific hardware terms where relevant such as: "
+             "LED status color, factory reset, provisioning, ERR-302, Z-Wave mesh, "
+             "firmware, Wi-Fi setup, Ethernet, BLE. "
+             "Do NOT include any brand name or product name in the output. "
+             "Output ONLY the short rewritten keywords — no explanation, no prefix."),
             ("human", "Original question: {query}")
         ]) | llm | StrOutputParser()
     )
@@ -217,7 +218,7 @@ def build_vectorstore_and_graph():
     def node_rewrite_query(state: GraphState) -> GraphState:
         optimized = rewrite_chain.invoke({"query": state["original_query"]})
         trace = state.get("qa_trace", [])
-        trace.append(f"✏️ Query rewritten: **'{state['original_query']}'** → **'{optimized}'**")
+        trace.append(f"✏️ Query optimized for vector search")
         return {**state, "optimized_query": optimized, "qa_trace": trace}
 
     def node_retrieve_and_grade(state: GraphState) -> GraphState:
@@ -238,9 +239,7 @@ def build_vectorstore_and_graph():
 
     def node_web_search(state: GraphState) -> GraphState:
         # Anchor web search to product to avoid generic off-topic results
-        #anchored_query = f"Orion SmartHub X1 Pro {state['optimized_query']}"
-        anchored_query = f" {state['optimized_query']}"
-        results = web_tool.invoke(anchored_query)
+        results = web_tool.invoke(state['optimized_query'])
         web_doc = Document(
             page_content=results,
             metadata={"source": "web_search"}
